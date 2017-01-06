@@ -41,7 +41,12 @@ const char *acquire_py =
 "                sys.stdout.write(data)\n"
 "";
 
-#define PSIZE (6404096-32768)
+#define PHEIGHT 1944
+#define PWIDTH 2592
+#define RAW_DATA_WIDTH (PWIDTH*5/4)
+#define RAW_WIDTH 3264
+#define RAW_HEIGHT 1952
+#define PSIZE (PHEIGHT*PWIDTH)
 
 struct scanner {
     int16_t pic[PSIZE];
@@ -63,6 +68,74 @@ int echoStdOut(void* context, ssh_channel *channel) {
     if (nbytes < 0) {
         return SSH_ERROR;
     }
+    return SSH_OK;
+}
+
+bool ssh_channel_skip_n(ssh_channel channel, uint32_t count) {
+    unsigned char dummy;
+    int tot_to_read = count;
+    int nbytes = 1;
+    while(tot_to_read > 0 && nbytes >= 0) {
+        nbytes = ssh_channel_read_timeout(channel, &dummy, 1, 0, -1);
+        tot_to_read -= nbytes;
+    }
+    return nbytes >= 0 && tot_to_read == 0;
+}
+
+int acquire(void* context, ssh_channel* channel) {
+    int nbytes;
+    unsigned char buffer[5];
+    int n_pics = 0;
+    bool go_on = true;
+    struct scanner *s = (struct scanner*)context;
+    memset(s->pic, 0, PSIZE);
+    ssh_channel_set_blocking(*channel, 1);
+    while (go_on) {
+        int dest_idx = 0;
+        int row = 0;
+        while(row < RAW_HEIGHT && go_on) {
+            if (row < PHEIGHT) {
+                int col = 0;
+                while (col < RAW_WIDTH && go_on) {
+                    if (col < RAW_DATA_WIDTH) {
+                        int to_read = sizeof(buffer);
+                        while(to_read > 0) {
+                            nbytes = ssh_channel_read_timeout(*channel, &buffer[sizeof(buffer)-to_read], to_read, 0, -1);
+                            if(nbytes <= 0) break;
+                            to_read -= nbytes;
+                            col += nbytes;
+                        }
+                        if (nbytes < 0) {
+                            return SSH_ERROR;
+                        } else if (nbytes == 0 && dest_idx > 0) {
+                            return SSH_ERROR;
+                        } else if (nbytes == 0) {
+                            go_on = false;
+                            break;
+                        }
+                        for (int i = 0; i < 4; ++i) {
+                            s->pic[dest_idx+i] += (buffer[i] << 2) + ((buffer[4] >> ((3 - i) * 2)) & 0x3);
+                        }
+                        dest_idx += 4;
+                        if (dest_idx == PSIZE) {
+                            ++n_pics;
+                            printf("Picture %d processed\n", n_pics);
+                        }
+                    } else {
+                        if (!ssh_channel_skip_n(*channel, RAW_WIDTH - RAW_DATA_WIDTH)) return SSH_ERROR;
+                        col += RAW_WIDTH - RAW_DATA_WIDTH;
+                    }
+                }
+            } else {
+                int trailing_rows = RAW_HEIGHT - PHEIGHT;
+                if (!ssh_channel_skip_n(*channel, RAW_WIDTH * trailing_rows)) return SSH_ERROR;
+                row += trailing_rows;
+            }
+            ++row;
+        }
+    }
+    if (n_pics == 0) return SSH_ERROR;
+    printf("Acquired and merged %d pictures!\n", n_pics);
     return SSH_OK;
 }
 
@@ -168,6 +241,7 @@ bool scp(ssh_session session, const char* content, const char* dest_dir, const c
 }
 
 int main(int argc, char* argv[]) {
+    struct scanner *s = (struct scanner*)malloc(sizeof(struct scanner));
     if (argc < 2) {
         printf("Usage: %s <user>@<host>\n", argv[0]);
         return 0;
@@ -198,7 +272,8 @@ int main(int argc, char* argv[]) {
     }
     free(password);
     free(user);
-    remote_exec(session, "python /tmp/acquire.py", NULL, echoStdOut);
+    remote_exec(session, "python /tmp/acquire.py", s, acquire);
     ssh_free(session);
+    free(s);
     return 0;
 }
