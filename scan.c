@@ -41,6 +41,30 @@ const char *acquire_py =
 "                sys.stdout.write(data)\n"
 "";
 
+#define PSIZE (6404096-32768)
+
+struct scanner {
+    int16_t pic[PSIZE];
+};
+
+typedef int (*outProcFun)(void*, ssh_channel*);
+
+int echoStdOut(void* context, ssh_channel *channel) {
+    int nbytes;
+    char buffer[256];
+    nbytes = ssh_channel_read(*channel, buffer, sizeof(buffer), 0);
+    while (nbytes > 0) {
+        if (write(1, buffer, nbytes) != (unsigned int)nbytes) {
+            return SSH_ERROR;
+        }
+        nbytes = ssh_channel_read(*channel, buffer, sizeof(buffer), 0);
+    }
+
+    if (nbytes < 0) {
+        return SSH_ERROR;
+    }
+    return SSH_OK;
+}
 
 ssize_t my_getpass (char **lineptr, size_t *n, FILE *stream) {
     struct termios old, new;
@@ -91,11 +115,9 @@ ssh_session setup_ssh(const char* host, const uint32_t *port, const char* user, 
     return session;
 }
 
-int remote_exec(ssh_session session, const char* command) {
+int remote_exec(ssh_session session, const char* command, void* context, outProcFun out_processor) {
     ssh_channel channel;
     int rc;
-    char buffer[256];
-    int nbytes;
     channel = ssh_channel_new(session);
     if (channel == NULL)
         return SSH_ERROR;
@@ -110,17 +132,8 @@ int remote_exec(ssh_session session, const char* command) {
         ssh_channel_free(channel);
         return rc;
     }
-    nbytes = ssh_channel_read(channel, buffer, sizeof(buffer), 0);
-    while (nbytes > 0) {
-        if (write(1, buffer, nbytes) != (unsigned int)nbytes) {
-            ssh_channel_close(channel);
-            ssh_channel_free(channel);
-            return SSH_ERROR;
-        }
-        nbytes = ssh_channel_read(channel, buffer, sizeof(buffer), 0);
-    }
-
-    if (nbytes < 0) {
+    rc = out_processor(context, &channel);
+    if (rc != SSH_OK) {
         ssh_channel_close(channel);
         ssh_channel_free(channel);
         return SSH_ERROR;
@@ -185,7 +198,7 @@ int main(int argc, char* argv[]) {
     }
     free(password);
     free(user);
-    remote_exec(session, "python /tmp/acquire.py");
+    remote_exec(session, "python /tmp/acquire.py", NULL, echoStdOut);
     ssh_free(session);
     return 0;
 }
