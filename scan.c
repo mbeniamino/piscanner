@@ -145,7 +145,7 @@ bool scp(ssh_session session, const char* content, const char* dest_dir, const c
     }
     rc = ssh_scp_init(scp);
     CHECK_SCP_RC(session, scp, rc, "Error initializing scp session");
-    rc = ssh_scp_push_file(scp, content, len, mode);
+    rc = ssh_scp_push_file(scp, dest_name, len, mode);
     CHECK_SCP_RC(session, scp, rc, "Error creating remote file");
     ssh_scp_write(scp, content, len);
     CHECK_SCP_RC(session, scp, rc, "Error writing remote file");
