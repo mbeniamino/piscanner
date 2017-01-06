@@ -1,3 +1,5 @@
+### WARNING: This file is here for reference only. The one uploaded to the
+### raspberry is embedded in scan.c (see acquire_py variable).
 import picamera
 import io
 import sys
